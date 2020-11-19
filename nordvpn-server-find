@@ -19,6 +19,7 @@ quiet=0
 location=false
 capacity=30 # Default capacity value is 30%
 limit=20 # Default limit value is 20
+protocol=tcp # Default protocol is tcp
 
 iso_codes=(
   'ad' 'ae' 'af' 'ag' 'ai' 'al' 'am' 'ao' 'aq' 'ar' 'as' 'at' 'au' 'aw' 'ax'
@@ -53,7 +54,7 @@ array_contains () {
   return $in
 }
 
-while getopts ":l:c:n:rhq" opt; do
+while getopts ":p:l:c:n:rhq" opt; do
     case "$opt" in
     h)
       echo
@@ -64,6 +65,7 @@ while getopts ":l:c:n:rhq" opt; do
       echo "-l   $(tput smul)location$(tput rmul)      2-letter ISO 3166-1 country code (ex: us, uk, de)"
       echo "-c   $(tput smul)capacity$(tput rmul)      current server load, integer between 1-100 (defaults to 30)"
       echo "-n   $(tput smul)limit$(tput rmul)         limits number of results, integer between 1-100 (defaults to 1 if -q is set, 20 otherwise)"
+      echo "-p   $(tput smul)protocol$(tput rmul)      protocol to support, either tcp or udp (defaults to tcp)"
       echo
       exit 0
       ;;
@@ -114,6 +116,19 @@ while getopts ":l:c:n:rhq" opt; do
         }
       fi
       ;;
+    p)
+      if [ "$OPTARG" == "tcp" ] || [ "$OPTARG" = "udp" ];
+      then
+        protocol=$OPTARG >&2;
+      else
+        {
+          >&2 echo "Invalid protocol parameter."
+          >&2 echo "Please provide either tcp or udp (tcp by default)"
+          >&2 echo "(ex: -p upd)"
+          exit 1
+        }
+      fi
+      ;;
     :)
       >&2 echo "Option -$OPTARG requires an argument."
       >&2 echo "Use -h to show the help."
@@ -142,13 +157,26 @@ if [[ $quiet -ne 1 ]]; then
   echo
 fi
 
-servers=$(curl --silent https://nordvpn.com/api/server/stats)
+server_descriptions=$(curl --silent https://api.nordvpn.com/server)
+server_stats=$(curl --silent https://nordvpn.com/api/server/stats)
 
 # Declare and populate array
+matches=()
+while read -r server_name
+do
+  matches+=($server_name)
+done < <(jq --compact-output -r --arg protocol "$protocol" --arg location "$location" \
+  '.[] |
+  select((($protocol == "tcp") and (.features.openvpn_tcp == true)) or (($protocol == "udp") and (.features.openvpn_upd = true))) |
+  select(.domain | contains($location)) |
+  .domain' <<<$server_descriptions)
+
 declare -A results
 while IFS="=" read -r key value
 do
+  if [[ " ${matches[@]} " =~ " ${key} " ]]; then
     results[$key]="$value"
+  fi
 done < <(jq --compact-output -r --arg location "$location" --arg capacity "$capacity" --arg limit "$limit" \
   '[. |
   to_entries[] |
@@ -159,7 +187,7 @@ done < <(jq --compact-output -r --arg location "$location" --arg capacity "$capa
   from_entries |
   to_entries |
   map("\(.key)=\(.value|tostring)") |
-  limit(($limit|tonumber);.[])' <<<"$servers")
+  limit(($limit|tonumber);.[])' <<<"$server_stats")
 
 # Print out results
 
